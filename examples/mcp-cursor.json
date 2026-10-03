@@ -1,0 +1,30 @@
+{
+  "_comment": [
+    "PermitIntel MCP server config for Cursor.",
+    "File location: project-local .cursor/mcp.json, or global ~/.cursor/mcp.json",
+    "Replace pmit_your_key with your own key from https://permitintel.ai/trial (14 days, no card).",
+    "Two forms below. 'permitintel' is the direct remote connection and is what you want.",
+    "'permitintel-bridged' uses the mcp-remote npx bridge and is the fallback for any client build",
+    "that cannot speak streamable-http directly. Enable one, not both: two connections to the same",
+    "server means every tool appears twice in the model's tool list.",
+    "Verified against the live server 2026-10-03: 4 tools, protocol 2025-06-18."
+  ],
+  "mcpServers": {
+    "permitintel": {
+      "url": "https://permitintel.ai/api/mcp",
+      "headers": {
+        "Authorization": "Bearer pmit_your_key"
+      }
+    },
+    "permitintel-bridged": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://permitintel.ai/api/mcp",
+        "--header",
+        "Authorization:Bearer pmit_your_key"
+      ]
+    }
+  }
+}

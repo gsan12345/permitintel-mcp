@@ -1,0 +1,24 @@
+{
+  "_comment": [
+    "PermitIntel MCP server config for Claude Desktop.",
+    "File location: macOS ~/Library/Application Support/Claude/claude_desktop_config.json",
+    "               Windows %APPDATA%\\Claude\\claude_desktop_config.json",
+    "Replace pmit_your_key with your own key from https://permitintel.ai/trial (14 days, no card).",
+    "Merge the mcpServers entry into your existing file; do not overwrite the whole file.",
+    "Verified against the live server 2026-10-03: initialize + tools/list return 4 tools over",
+    "streamable-http at protocol 2025-06-18. A GET to /api/mcp returns 405 by design, so a 405 in a",
+    "connectivity test means something issued a GET, not that the server is down.",
+    "If your Claude Desktop build predates remote MCP support, use the mcp-remote bridge shown in",
+    "mcp-cursor.json, which works identically here.",
+    "Strip these _comment keys before use if your client is strict about unknown fields."
+  ],
+  "mcpServers": {
+    "permitintel": {
+      "type": "http",
+      "url": "https://permitintel.ai/api/mcp",
+      "headers": {
+        "Authorization": "Bearer pmit_your_key"
+      }
+    }
+  }
+}

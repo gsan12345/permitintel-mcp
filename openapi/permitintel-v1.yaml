@@ -1,0 +1,1123 @@
+openapi: 3.1.0
+
+# Generated 2026-10-03 by lane pi-listings-r1 (topic 13828) from
+# projects/permitintel/api-spec-v1.md, for upload to RapidAPI and any other
+# directory that wants a machine-readable spec.
+#
+# PROVENANCE RULES THIS FILE FOLLOWS. Do not relax them on a later edit:
+#  * Every path, parameter and error code below appears in api-spec-v1.md.
+#    Nothing is invented.
+#  * Only paths the markdown marks LIVE are present. Deliberately ABSENT, because
+#    the markdown marks them unavailable and production returns 404 (probed
+#    unauthenticated 2026-10-03):
+#      /v1/jurisdictions/{id}                    spec section 6
+#      /v1/aggregations/permit-counts            spec section 7
+#      /v1/aggregations/contractor-counts        spec section 8
+#      /v1/health                                spec section 9  (use /v1/usage)
+#  * /api/v1/verify, /api/v1/verify_license and /api/v1/roof are ALSO 404.
+#    verify_license and roof_lookup are MCP tools on https://permitintel.ai/api/mcp
+#    with no REST route, so they are not in this document. The nearest REST
+#    surface for license status is GET /v1/contractors/{license}.
+#  * RECONCILED AGAINST PRODUCTION 2026-10-03 with an internal dev key, and the
+#    markdown lost on four points. Where this document and api-spec-v1.md differ,
+#    this document matches what the API actually served, and the field says so:
+#      - the 11 fields the markdown calls "ship with PR #155, NOT yet deployed"
+#        are LIVE (present on 50/50 sampled rows). No pending marker is carried.
+#      - status_stage_basis "derived_status", which the markdown says is NEVER
+#        returned, is the MAJORITY value: 100 of 150 rows over 3 jurisdictions.
+#      - jurisdiction_place, jurisdiction_resolved and occupancy_type are served
+#        on 50/50 rows and appear in no field table in the markdown.
+#      - the ?license= contractor envelope is {contractor, disclosure} with no
+#        count, not the {count, disclosure, contractors} the markdown documents.
+#    api-spec-v1.md was NOT edited by this lane (no-site-change rail); the defect
+#    is reported in ops/reports/pi_listings_r1_20261003.md section 1b-3.
+#
+# Endpoint existence confirmed live 2026-10-03 (401 = exists and requires a key,
+# which is a confirmation; 200 = exists and is public):
+#   401  GET /api/v1/permits            401  GET /api/v1/permits/{id}
+#   401  GET /api/v1/contractors        401  GET /api/v1/contractors/{license}
+#   401  GET /api/v1/usage              200  GET /api/v1/jurisdictions
+#   200  GET /api/v1/coverage
+# No response BODY was verified for the four keyed routes, because this lane held
+# no key at generation time. The schemas below are transcribed from the markdown
+# spec's own field tables, not from a captured response.
+
+info:
+  title: PermitIntel API
+  version: "1.0.0"
+  summary: Building permit records and Florida contractor license data.
+  description: |
+    Building permit records collected from the cities and counties that issue them, served as JSON.
+
+    As of 2026-10-03 (`GET /v1/coverage`): 81,884,842 permit records, 51 states, 1,236 published
+    jurisdictions, 5,273,921 permits issued in the trailing twelve months. Florida holds 28,647,136
+    of those records across 260 jurisdictions, with Florida DBPR contractor licenses matched to
+    their permit records.
+
+    ## Reading a response
+
+    There is no `success`/`data` wrapper and there is no `total`. Each endpoint returns its payload
+    under a named key (`permits`, `contractors`, `jurisdictions`) next to a `query` echo of the
+    parameters it actually applied, a `count` of rows in this page, and a `disclosure` string.
+    Read the `query` echo back when you are not sure a filter landed.
+
+    `total` is absent on purpose: counting all matches costs the same scan the page was bounded to
+    avoid, so the API does not quote a number it cannot compute honestly.
+
+    ## Counts are a floor
+
+    Permit offices publish on their own schedules and some publish almost nothing. `disclosure` is
+    on every permit response and is not boilerplate to strip. Present results as "at least N on
+    record", never as a total filed.
+
+    ## Metering
+
+    Per record, where one record is one object returned. Writes, empty results, errors, the public
+    coverage endpoints and `/v1/usage` cost nothing. `X-Records-Request`, `X-Records-Limit`,
+    `X-Records-Remaining` and `X-Records-Reset` ride every metered response. At the monthly ceiling
+    the API returns `402 records_limit_exceeded` with an upgrade link. There is no sandbox: evaluate
+    on the 14-day trial key against production.
+
+    ## Unknown parameters are refused
+
+    A query parameter an endpoint does not accept returns `400 unknown_param`. Nothing is silently
+    ignored, so a typo fails loudly instead of returning a plausible wrong answer.
+  termsOfService: https://permitintel.ai/terms
+  contact:
+    name: PermitIntel support
+    email: records@permitintel.ai
+    url: https://permitintel.ai/docs
+  license:
+    # Not an open-source license. This names the terms the DATA is served under,
+    # which is what `info.license` means for a commercial API, and it is the
+    # published PermitIntel API Terms of Service rather than an SPDX identifier.
+    name: PermitIntel API Terms of Service
+    url: https://permitintel.ai/terms
+  x-company: Contract Advantage LLC
+
+externalDocs:
+  description: PermitIntel API documentation
+  url: https://permitintel.ai/docs
+
+servers:
+  - url: https://permitintel.ai/api/v1
+    description: Production. There is no sandbox environment.
+
+security:
+  - bearerAuth: []
+  - apiKeyHeader: []
+
+tags:
+  - name: Permits
+    description: Building permit records.
+  - name: Contractors
+    description: Contractor licenses and permit activity.
+  - name: Discovery
+    description: Public, keyless endpoints. Jurisdiction catalog and coverage.
+  - name: Account
+    description: What this key has spent.
+
+paths:
+  /permits:
+    get:
+      tags: [Permits]
+      operationId: searchPermits
+      summary: Search building permits
+      description: |
+        One of four modes, selected by which parameter you send.
+
+        | mode | trigger | answers |
+        |---|---|---|
+        | address | `address=` | every permit held at a street address |
+        | contractor | `contractor=` | a contractor's permit history, by business name or license number |
+        | feed | `updated_since=` | every permit record that **changed** since a timestamp. The polling mode |
+        | browse | `jurisdiction=` alone | one jurisdiction's permits, most recent issue date first |
+
+        There is no `sort`. Address and contractor modes return newest issue date first; feed mode
+        returns oldest change first, which is what makes the cursor resumable.
+
+        **Use the feed, not `from`/`to`, to keep a copy in sync.** `from` and `to` filter on the
+        permit's issue date, so a permit ingested today carrying a 2019 issue date is invisible to a
+        date-window poll. Records arriving from public records responses, rescrapes and status
+        refreshes are most of what lands. `updated_since` filters on when the record changed.
+
+        Three feed behaviors to build against rather than discover:
+
+        * A short page is not the end. The feed ends when `meta.next_cursor` is `null`.
+        * With `trade`, a page can return zero rows and still have more to give. Trades are matched
+          after the rows are read, not by an index, so early pages can be empty where a trade is
+          thin. `meta.scan_complete` is `false` on those pages. Never read an empty page as
+          "no records of this trade here".
+        * Without `new_only` this is a change feed, not a new-permit feed: it includes enrichment
+          and status updates to permits you already have.
+
+        **`state` is feed mode only, and a state-wide change feed is refused.** `state` has no index
+        pairing it to the change column, so `?state=CA&updated_since=` is stopped at 20 s with
+        `400 feed_filter_too_slow` (measured against production 2026-09-27: 20.21 s, any window).
+        Poll the state's counties, or poll with no geographic filter and filter on your side.
+        County change feeds are supported and resolve to member jurisdictions.
+
+        Contractor-name search pages to 1,000 rows (`offset + limit`) and then returns
+        `400 pagination_exhausted` rather than an empty page.
+      parameters:
+        - name: address
+          in: query
+          description: Street address, prefix-matched. Minimum 4 characters. Selects address mode.
+          schema: { type: string, minLength: 4 }
+          example: 4250 Biscayne Blvd
+        - name: contractor
+          in: query
+          description: Business name (minimum 3 characters) or an exact license number. Selects contractor mode.
+          schema: { type: string, minLength: 3 }
+          example: CCC1332541
+        - name: updated_since
+          in: query
+          description: >
+            ISO 8601 timestamp. Every permit whose record changed at or after it, oldest change
+            first. Selects feed mode.
+          schema: { type: string, format: date-time }
+          example: "2026-09-01T00:00:00Z"
+        - name: new_only
+          in: query
+          description: With `updated_since`, restrict to permits first ingested since then. Feed mode only.
+          schema: { type: boolean, default: false }
+        - name: cursor
+          in: query
+          description: Opaque keyset cursor from `meta.next_cursor`. Feed mode only. Prefer it to `offset`.
+          schema: { type: string }
+        - name: jurisdiction
+          in: query
+          description: >
+            Exact jurisdiction code, case-insensitive. Florida codes are upper-case and prefixed
+            (`FL-ORANGE-ORLANDO`); jurisdictions ingested outside Florida can be a bare lower-case
+            slug (`san_francisco`). Either spelling resolves, and `query.jurisdiction` reports which
+            code answered. On its own it selects browse mode.
+          schema: { type: string }
+          example: FL-ORANGE-ORLANDO
+        - name: county
+          in: query
+          description: >
+            County **jurisdiction prefix**, not a county name: `FL-MIAMI_DADE` matches every
+            jurisdiction code beginning with it. Narrows another query and cannot browse on its own.
+            Fully supported on the change feed. Jurisdictions whose code is not state-prefixed are
+            not reachable this way and must be named exactly with `jurisdiction`.
+          schema: { type: string }
+          example: FL-MIAMI_DADE
+        - name: state
+          in: query
+          description: >
+            Two-letter state code. **Feed mode only**; address and contractor modes answer
+            `400 state_unsupported_in_mode`. A state-wide change feed is itself refused with
+            `400 feed_filter_too_slow`.
+          schema: { type: string, minLength: 2, maxLength: 2 }
+        - name: city
+          in: query
+          description: Narrow to a city, substring match. Browse, address and contractor modes only. Not available in feed mode.
+          schema: { type: string }
+        - name: zip
+          in: query
+          description: Narrow to a 5-digit ZIP. Browse, address and contractor modes only. Not available in feed mode.
+          schema: { type: string }
+        - name: trade
+          in: query
+          description: >
+            Comma-separated trade slugs. Normalized across the source's permit type, work class and
+            type of work, and it is the same classifier that fills each row's `tags`, so a row
+            returned by `trade=roofing` always carries `roofing`.
+          schema:
+            type: string
+            example: roofing,solar
+          x-permitintel-vocabulary:
+            [roofing, hvac, electrical, plumbing, pool, solar, windows_doors, fence, demolition, general]
+        - name: work_type
+          in: query
+          description: Raw substring match on the source's own work wording. Use `trade` for a normalized filter.
+          schema: { type: string }
+        - name: status
+          in: query
+          description: Substring match on the source's own permit status string.
+          schema: { type: string }
+        - name: min_value
+          in: query
+          description: Minimum declared permit value, in whole dollars.
+          schema: { type: integer, minimum: 0 }
+        - name: from
+          in: query
+          description: "`issue_date` on or after this date. Note the name: there is no `date_from`."
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          description: "`issue_date` on or before this date. Note the name: there is no `date_to`."
+          schema: { type: string, format: date }
+        - name: include
+          in: query
+          description: >
+            `contractor_contact` nests the licensed contractor's business name, phone, email and
+            verified website on each row. Opt-in here because resolving contacts for a whole page is
+            expensive.
+          schema: { type: string, enum: [contractor_contact] }
+        - name: limit
+          in: query
+          description: Rows per page. An over-large value is clamped to 200, not refused.
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+        - name: offset
+          in: query
+          description: Rows to skip. Use `cursor` in feed mode.
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        "200":
+          description: >
+            A page of permits. A well-formed jurisdiction code holding no records is a `200` with
+            `count: 0` and a populated `did_you_mean`, never a `400`.
+          headers:
+            X-Records-Request:    { $ref: "#/components/headers/XRecordsRequest" }
+            X-Records-Limit:      { $ref: "#/components/headers/XRecordsLimit" }
+            X-Records-Remaining:  { $ref: "#/components/headers/XRecordsRemaining" }
+            X-Records-Reset:      { $ref: "#/components/headers/XRecordsReset" }
+            X-RateLimit-Limit:     { $ref: "#/components/headers/XRateLimitLimit" }
+            X-RateLimit-Remaining: { $ref: "#/components/headers/XRateLimitRemaining" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PermitSearchResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "402": { $ref: "#/components/responses/PaymentRequired" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
+  /permits/{id}:
+    get:
+      tags: [Permits]
+      operationId: getPermit
+      summary: One permit by internal id
+      description: |
+        **The key is the internal `id`, not the permit number.** Permit offices number
+        independently, so `23-004512` names a different building in Orlando than in Sunrise and
+        cannot identify a single record. Every row from `/v1/permits` carries the `id` this route
+        takes.
+
+        The contractor's contact is included by default here, without `include=contractor_contact`:
+        one permit has at most one contractor, so there is no fan-out to pay for.
+        `include=contractor_contact` is still accepted and changes nothing.
+
+        `include` is the only parameter accepted. Every other `/v1/permits` parameter is a row
+        filter, and a filter on a single keyed record can only turn a `200` into a confusing empty
+        page, so `/v1/permits/{id}?status=Finalized` answers `400 unknown_param`.
+
+        **A `404` is a statement about what we serve, not about what was filed.** A permit may be
+        held and not served: a quarantined jurisdiction, a de-duplicated record, a non-permit record
+        type. This route reads exactly the relation `/v1/permits` reads, so a permit the search
+        would never return is not reachable by id either. Neither response ever claims a permit does
+        not exist.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: >
+            The permit's internal numeric id. A permit number, a leading zero, a non-digit, or a
+            value wider than a 64-bit integer answers `400 bad_permit_id`.
+          schema: { type: integer, format: int64 }
+          example: 236705358
+        - name: include
+          in: query
+          description: Accepted and inert. Contact is already included on this route.
+          schema: { type: string, enum: [contractor_contact] }
+      responses:
+        "200":
+          description: The permit.
+          headers:
+            X-Records-Request:   { $ref: "#/components/headers/XRecordsRequest" }
+            X-Records-Remaining: { $ref: "#/components/headers/XRecordsRemaining" }
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  permit:     { $ref: "#/components/schemas/Permit" }
+                  disclosure: { $ref: "#/components/schemas/Disclosure" }
+        "400":
+          description: "`bad_permit_id` (the segment is not an id) or `unknown_param` (a row filter was sent)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "402": { $ref: "#/components/responses/PaymentRequired" }
+        "404":
+          description: "`not_found`. No permit with that id is available through this API."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "503": { $ref: "#/components/responses/SearchTimeout" }
+
+  /contractors:
+    get:
+      tags: [Contractors]
+      operationId: searchContractors
+      summary: Search contractors
+      description: |
+        Find contractors by name, license, specialty, or geographic and activity footprint.
+
+        **At least one of `license`, `name`, `specialty`, `county`, `city`, or an activity filter
+        (`sort`, `min_permits`, `min_permits_12mo`) is required.** With none of them the endpoint
+        answers `400 missing_query`. Any parameter not listed here is refused with
+        `400 unknown_param`, never ignored.
+
+        `license` returns a single-contractor envelope rather than a list.
+
+        Parameters that look right and are not: `license_number` (use `license`), `trade` (use
+        `specialty`), `min_permit_count` (use `min_permits`). `state` has no equivalent on this
+        endpoint and is a known gap; narrow by `county` or `city`.
+      parameters:
+        - name: license
+          in: query
+          description: Exact state license number, case-insensitive. Returns a single-contractor envelope.
+          schema: { type: string }
+          example: CCC1332541
+        - name: name
+          in: query
+          description: Business name, case-insensitive substring match.
+          schema: { type: string }
+        - name: specialty
+          in: query
+          description: >
+            Case-insensitive substring match on the **license type**, for example `roofing` or
+            `electrical`. This is the license classification, not the permit-trade vocabulary used
+            by `/v1/permits?trade=`. The two are not the same list.
+          schema: { type: string }
+        - name: county
+          in: query
+          description: County, case-insensitive substring match. A county name here, unlike the jurisdiction prefix `/v1/permits` wants.
+          schema: { type: string }
+          example: Miami-Dade
+        - name: city
+          in: query
+          description: City, case-insensitive substring match.
+          schema: { type: string }
+        - name: sort
+          in: query
+          description: Rank by activity. Defaults to `permits_12mo` when an activity filter is used.
+          schema:
+            type: string
+            enum: [permits, permits_12mo, value, value_12mo, last_active]
+        - name: min_permits
+          in: query
+          description: Minimum total permits on file. Supplying it selects activity-ranked search.
+          schema: { type: integer, minimum: 0 }
+        - name: min_permits_12mo
+          in: query
+          description: Minimum permits in the trailing 12 months.
+          schema: { type: integer, minimum: 0 }
+        - name: limit
+          in: query
+          description: Rows per page. Note the bounds differ from `/v1/permits`.
+          schema: { type: integer, default: 25, minimum: 1, maximum: 100 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        "200":
+          description: A page of contractors, or a single-contractor envelope when `license` was sent.
+          headers:
+            X-Records-Request:   { $ref: "#/components/headers/XRecordsRequest" }
+            X-Records-Remaining: { $ref: "#/components/headers/XRecordsRemaining" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContractorSearchResponse" }
+        "400":
+          description: "`missing_query` (no search or activity filter) or `unknown_param`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "402": { $ref: "#/components/responses/PaymentRequired" }
+        "404":
+          description: "`not_found`. `?license=` matched no contractor."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
+  /contractors/{license}:
+    get:
+      tags: [Contractors]
+      operationId: getContractorProfile
+      summary: Contractor profile by license number
+      description: |
+        **Keyed on the DBPR license number. There is no contractor UUID.** That is not a surface we
+        chose to withhold: no surrogate identifier for a contractor is recorded anywhere, and every
+        join in the product (permit matches, workers comp coverage, EPA certifications, canonical
+        contact, the activity rollup) runs on the license.
+
+        Matched case-insensitively, so `cgc1524985` and `CGC1524985` are the same request.
+
+        **No parameters.** The profile is fixed by its path, and `?license=` is deliberately not
+        accepted here: `/v1/contractors/CGC1524985?license=OTHER` answers `400 unknown_param` rather
+        than answering about neither.
+
+        Returns exactly what `GET /v1/contractors?license=` returns, from the same code with the
+        same tier gating, plus `links.permits` and `recent_permits`.
+
+        **`recent_permits` is a sample, never a history.** Capped at 10, no count, and rows whose
+        name is the applicant or owner are excluded entirely because that license is not one we
+        trust to attribute work to this contractor. `activity.permit_count` is the number on record
+        and `links.permits` is the paged history. A `recent_permits_incomplete: true` key appears
+        only if the sample could not be built, so an empty array means "no permits on record", never
+        "we could not look".
+      parameters:
+        - name: license
+          in: path
+          required: true
+          description: >
+            State license number, 3 to 32 characters of letters, digits and hyphens. Anything else
+            answers `400 bad_license`, with a body pointing at `?name=` for name search.
+          schema: { type: string, minLength: 3, maxLength: 32, pattern: "^[A-Za-z0-9-]{3,32}$" }
+          example: CCC1332541
+      responses:
+        "200":
+          description: The contractor profile.
+          headers:
+            X-Records-Request:   { $ref: "#/components/headers/XRecordsRequest" }
+            X-Records-Remaining: { $ref: "#/components/headers/XRecordsRemaining" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContractorProfileResponse" }
+        "400":
+          description: "`bad_license`, or `unknown_param` if any query parameter was sent."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "402": { $ref: "#/components/responses/PaymentRequired" }
+        "404":
+          description: "`not_found`. No contractor with that license number."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "503": { $ref: "#/components/responses/SearchTimeout" }
+
+  /jurisdictions:
+    get:
+      tags: [Discovery]
+      operationId: listJurisdictions
+      summary: List jurisdiction codes and their coverage
+      description: |
+        The discovery surface. It lists the jurisdiction codes you pass back to
+        `/v1/permits?jurisdiction=`, with the coverage held for each, ordered by descending permit
+        count.
+
+        **No API key required.** Public, costs 0 records, reads a published coverage file and never
+        queries the permit database. Cached `public, max-age=3600, s-maxage=86400`.
+
+        **This list is a floor, not a census.** Jurisdictions whose records are held under a raw
+        dataset identifier rather than a place code are not listed: measured 2026-09-27, 47 such
+        codes hold 2,215,898 rows.
+
+        `has_data` is refused with `400 unknown_param`, deliberately. No published row has
+        `permits: 0`, so `has_data=true` is the only thing the data could mean and `has_data=false`
+        has no answerable meaning. A parameter that can never change a result is a silent-drop
+        defect, so it is refused rather than accepted.
+      security: []
+      parameters:
+        - name: state
+          in: query
+          description: >
+            Two-letter state code. A value that is not two letters is refused with `400 bad_state`
+            rather than ignored, so a typo cannot look like a state we hold nothing for.
+          schema: { type: string, minLength: 2, maxLength: 2 }
+          example: FL
+        - name: county
+          in: query
+          description: >
+            County prefix in canonical `XX-COUNTY` form. Malformed values answer `400 bad_county`.
+            Jurisdictions ingested outside Florida can carry a bare slug with no county prefix
+            (`san_francisco`); those are reachable by `state` or `q`, never by `county`.
+          schema: { type: string }
+          example: FL-MIAMI_DADE
+        - name: q
+          in: query
+          description: >
+            Substring of the jurisdiction code, minimum 2 characters (`400 query_too_short` below
+            that). Spaces are treated as underscores, so `miami beach` and `miami_beach` both match.
+          schema: { type: string, minLength: 2 }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, minimum: 1, maximum: 1000 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        "200":
+          description: A page of jurisdictions. Costs 0 records.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JurisdictionListResponse" }
+        "400":
+          description: "`bad_state`, `bad_county`, `query_too_short` or `unknown_param`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /coverage:
+    get:
+      tags: [Discovery]
+      operationId: getCoverage
+      summary: Public coverage and scope file
+      description: |
+        What PermitIntel holds, per state and per jurisdiction. Public, no API key, costs 0 records.
+        This is also the unauthenticated liveness check: the markdown spec points here instead of a
+        `/v1/health` route, which does not exist and is not planned.
+      security: []
+      responses:
+        "200":
+          description: The coverage file.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CoverageResponse" }
+        "404":
+          description: >
+            `not_an_endpoint`, if the path is mistyped. The body lists the endpoints that do exist.
+            There is no other documented failure mode on this route: it is public, takes no
+            parameters and reads a static file, so it has no auth, metering or validation error to
+            return.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /usage:
+    get:
+      tags: [Account]
+      operationId: getUsage
+      summary: What this key has spent this month
+      description: |
+        Costs 0 records and keeps answering after the allowance is spent, so a client holding a
+        `402` can always see why and when it clears.
+      responses:
+        "200":
+          description: Usage for the current period.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UsageResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: "`Authorization: Bearer pmit_...`. Keys are prefixed `pmit_`. Start a 14-day trial at https://permitintel.ai/trial (no card)."
+    apiKeyHeader:
+      type: apiKey
+      in: header
+      name: x-api-key
+      description: "`x-api-key: pmit_...`. Equivalent to the bearer form."
+
+  headers:
+    XRecordsRequest:
+      description: Records this request cost.
+      schema: { type: integer }
+    XRecordsLimit:
+      description: Monthly records allowance. Omitted on unmetered plans.
+      schema: { type: integer }
+    XRecordsRemaining:
+      description: Records left this month. Omitted on unmetered plans.
+      schema: { type: integer }
+    XRecordsReset:
+      description: ISO 8601 timestamp when the monthly allowance resets.
+      schema: { type: string, format: date-time }
+    XRateLimitLimit:
+      description: Requests allowed per minute.
+      schema: { type: integer }
+    XRateLimitRemaining:
+      description: Requests remaining in the current minute.
+      schema: { type: integer }
+    RetryAfter:
+      description: Seconds until a retry is allowed.
+      schema: { type: integer }
+
+  responses:
+    BadRequest:
+      description: >
+        Bad request. An over-large `limit` is clamped to the endpoint maximum, not refused; an
+        unrecognized query parameter is refused with `unknown_param`, never ignored.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: >
+        `missing_api_key` when no key is supplied, or `invalid_api_key` when one is supplied and is
+        malformed, revoked, or its subscription expired. (`invalid_api_key` was observed live
+        2026-10-03; api-spec-v1.md documents only `missing_api_key` for this status.) Carries no
+        `X-Records-*` headers, because nothing was spent.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    PaymentRequired:
+      description: >
+        `records_limit_exceeded`. The monthly allowance is spent. Nothing is billed after the fact;
+        upgrade or wait for the reset. `GET /v1/usage` keeps answering.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/PaymentRequiredError" }
+    TooManyRequests:
+      description: Burst rate limit exceeded. Costs no records.
+      headers:
+        Retry-After: { $ref: "#/components/headers/RetryAfter" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ServerError:
+      description: "`query_failed` or `INTERNAL_ERROR`. Retry with exponential backoff."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    SearchTimeout:
+      description: "`search_timeout`. A database statement timeout. Retryable."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Disclosure:
+      type: string
+      description: >
+        Required attribution of scope, present on every permit response. Not boilerplate to strip:
+        it is the difference between "at least N on record" and a false claim of completeness.
+      example: Permit data reflects records PermitIntel has ingested and is not represented as a complete record of all permits.
+
+    Error:
+      type: object
+      description: >
+        Errors are flat. A snake_case `error` string and a human-readable `message`. There is no
+        `success` flag, no nested error object and no `code` key.
+      required: [error, message]
+      properties:
+        error:
+          type: string
+          description: Machine-readable error slug.
+          examples:
+            [missing_api_key, invalid_api_key, unknown_param, missing_query, not_found, not_an_endpoint, bad_state,
+             bad_county, query_too_short, bad_license, bad_permit_id, pagination_exhausted,
+             state_unsupported_in_mode, feed_filter_too_slow, feed_filter_too_broad,
+             records_limit_exceeded, search_timeout, query_failed, INTERNAL_ERROR]
+        message:
+          type: string
+          description: What went wrong, in words, and usually what to do instead.
+        param:
+          type: string
+          description: Present on some errors, naming the offending input.
+
+    PaymentRequiredError:
+      allOf:
+        - $ref: "#/components/schemas/Error"
+        - type: object
+          properties:
+            limit:       { type: integer }
+            used:        { type: integer }
+            resets_at:   { type: string, format: date-time }
+            upgrade_url: { type: string, format: uri }
+
+    PermitSearchResponse:
+      type: object
+      required: [query, count, disclosure, permits]
+      properties:
+        query:
+          type: object
+          additionalProperties: true
+          description: The parameters the endpoint actually applied. Read it back to confirm a filter was understood.
+        count:
+          type: integer
+          description: Rows in this response. **Not** a total match count. There is no `total`.
+        limit:
+          type: integer
+        offset:
+          type: integer
+          description: Echo. Observed on address, contractor and browse responses 2026-10-03; absent in feed mode, which pages on `cursor`.
+        disclosure:
+          $ref: "#/components/schemas/Disclosure"
+        permits:
+          type: array
+          items: { $ref: "#/components/schemas/Permit" }
+        did_you_mean:
+          type: array
+          description: Populated on a browse that matched nothing. The status stays `200`.
+          items: { type: string }
+        meta:
+          $ref: "#/components/schemas/PermitSearchMeta"
+
+    PermitSearchMeta:
+      type: object
+      description: Paging and completeness state.
+      properties:
+        next_cursor:
+          type: [string, "null"]
+          description: Pass back as `cursor`. The feed ends when this is `null`, never on a short page.
+        has_more:
+          type: boolean
+        page_note:
+          type: string
+          description: >
+            A human-readable warning the feed ships with its own pages, observed live 2026-10-03
+            and documented in no field table: "Rows are ordered oldest-change-first. A page may
+            return fewer than 'limit' rows; the feed ends when next_cursor is null, never on a
+            short page."
+        scan_complete:
+          type: boolean
+          description: >
+            `false` on a trade-filtered feed page whose bounded scan window ended before the page
+            filled. `next_cursor` then points at where the scan stopped rather than at the last row
+            served, so the walk keeps moving. A `false` here with zero rows is not "no records".
+
+    Permit:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: Permit identifier. This is what `/v1/permits/{id}` takes.
+        permit_number:
+          type: string
+          description: The jurisdiction's own permit number. Not unique across jurisdictions.
+        jurisdiction:
+          type: string
+          example: FL-ORANGE-ORLANDO
+        jurisdiction_place:
+          type: [string, "null"]
+          description: >
+            Served on 50/50 sampled rows 2026-10-03 and documented in no field table in
+            api-spec-v1.md. In the sample it mirrored `jurisdiction`. Treat its relationship to
+            `jurisdiction` as unspecified until the API docs describe it; do not key on it.
+        jurisdiction_resolved:
+          type: [boolean, "null"]
+          description: >
+            Served on 50/50 sampled rows 2026-10-03, undocumented in api-spec-v1.md. Boolean,
+            `true` throughout the sample. Presumed to say whether the jurisdiction label resolved
+            to a real code, which would pair with the `addressable` flag on `/v1/jurisdictions`,
+            but that is inference and not a documented guarantee.
+        occupancy_type:
+          type: [string, "null"]
+          description: >
+            Served on 50/50 sampled rows 2026-10-03, undocumented in api-spec-v1.md, and `null`
+            on every row of the sample. Present in the response shape; do not rely on a value.
+        permit_type: { type: [string, "null"], description: "The source's own wording, unmodified." }
+        work_class:  { type: [string, "null"], description: "The source's own wording, unmodified." }
+        work_type:   { type: [string, "null"], description: "The source's own wording, unmodified." }
+        description: { type: [string, "null"], description: Scope of work. }
+        status:
+          type: [string, "null"]
+          description: The source's own status string, not a normalized enum.
+        apply_date:    { type: [string, "null"], format: date }
+        issue_date:    { type: [string, "null"], format: date }
+        finalize_date: { type: [string, "null"], format: date }
+        value_usd:
+          type: [integer, "null"]
+          description: Declared value in whole dollars.
+        contractor: { $ref: "#/components/schemas/PermitContractor" }
+        applicant:
+          type: [object, "null"]
+          description: Present where the source published an applicant or owner rather than a contractor.
+          properties:
+            name: { type: [string, "null"] }
+        plan_review:
+          type: [object, "null"]
+          description: For plan-review portals, `null` elsewhere. **Plans approved is not a permit issued.**
+          properties:
+            approved_date: { type: [string, "null"], format: date }
+            status:        { type: [string, "null"] }
+        site: { $ref: "#/components/schemas/PermitSite" }
+        property:
+          type: [object, "null"]
+          additionalProperties: true
+          description: >
+            Parcel attributes: owner, year built, living square feet, assessed, land and total
+            value, last sale, roof codes, plus per-field `sources`.
+        start_date:
+          type: [string, "null"]
+          format: date
+          description: Alias of `issue_date`, for callers written against the Shovels field names.
+        end_date:
+          type: [string, "null"]
+          format: date
+          description: Alias of `finalize_date`.
+        approval_duration_days:
+          type: [integer, "null"]
+          description: "`issue_date` minus `apply_date` in whole calendar days. `null` if either date is absent or the difference is negative."
+        construction_duration_days:
+          type: [integer, "null"]
+          description: "`finalize_date` minus `issue_date`, same rule."
+        total_duration_days:
+          type: [integer, "null"]
+          description: "`finalize_date` minus `apply_date`, same rule."
+        status_stage:
+          type: [string, "null"]
+          enum: [applied, issued, finaled, expired, withdrawn, unknown, null]
+          description: >
+            Normalized life stage. Read `status_stage_basis` before switching on it. Two limits:
+            `expired` is effectively unreachable because the serving view does not project the
+            expiry date and the date branch outranks the status string, so a permit the source calls
+            expired is served as `issued`. If expiry matters, read `status` yourself. Ambiguous
+            strings are left `unknown` on purpose rather than guessed.
+        status_stage_basis:
+          type: [string, "null"]
+          enum: [dates, raw_status, derived_status, none, null]
+          description: >
+            Which evidence produced `status_stage`. It says what was read; it does not say that a
+            contradicting status string was ignored.
+            **Measured on production 2026-10-03 over 150 rows in 3 jurisdictions: `derived_status`
+            100, `dates` 50, `raw_status` 0, `none` 0.** Handle `derived_status` as the common case.
+            (api-spec-v1.md states `derived_status` is never returned. On the live API it is the
+            majority value, so that line is wrong and is reported as a docs defect.)
+        tags:
+          type: array
+          description: >
+            Trade tags from the same classifier `?trade=` filters on, so a row returned by
+            `trade=roofing` always carries `roofing`. Always an array, never `null`; `[]` when
+            nothing matched. One permit can carry several.
+          items: { type: string }
+
+    PermitContractor:
+      type: object
+      properties:
+        name:
+          type: [string, "null"]
+          description: Contractor as named on the permit. `null` on an applicant or owner row.
+        license_number:
+          type: [string, "null"]
+          description: Matched license, or `null`.
+        contact:
+          type: [object, "null"]
+          description: "`include=contractor_contact` only on `/v1/permits`; included by default on `/v1/permits/{id}`."
+          properties:
+            business_name:     { type: [string, "null"] }
+            phone:             { type: [string, "null"] }
+            email:             { type: [string, "null"] }
+            website_verified:  { type: [string, "null"] }
+
+    PermitSite:
+      type: object
+      properties:
+        address: { type: [string, "null"] }
+        city:    { type: [string, "null"] }
+        state:   { type: [string, "null"] }
+        zip:     { type: [string, "null"] }
+        parcel:  { type: [string, "null"] }
+
+    ContractorSearchResponse:
+      description: >
+        Two shapes from one route, and they are not interchangeable. `?license=` returns a single
+        contractor under `contractor` and **carries no `count`**; every other search returns a
+        `contractors` array with a `count`. Both verified live 2026-10-03. Branch on which key is
+        present, not on `count`.
+      oneOf:
+        - $ref: "#/components/schemas/ContractorListEnvelope"
+        - $ref: "#/components/schemas/ContractorSingleEnvelope"
+
+    ContractorListEnvelope:
+      type: object
+      title: Contractor list (name, specialty, county, city or activity search)
+      required: [count, disclosure, contractors]
+      properties:
+        count:
+          type: integer
+          description: Rows in this page. There is no total row count.
+        disclosure: { $ref: "#/components/schemas/Disclosure" }
+        contractors:
+          type: array
+          items: { $ref: "#/components/schemas/Contractor" }
+
+    ContractorSingleEnvelope:
+      type: object
+      title: Single contractor (?license=)
+      description: "Observed live 2026-10-03: top-level keys are exactly `contractor` and `disclosure`."
+      required: [contractor, disclosure]
+      properties:
+        contractor: { $ref: "#/components/schemas/Contractor" }
+        disclosure: { $ref: "#/components/schemas/Disclosure" }
+
+    ContractorProfileResponse:
+      type: object
+      required: [contractor, disclosure]
+      properties:
+        contractor: { $ref: "#/components/schemas/Contractor" }
+        links:
+          type: object
+          properties:
+            permits:
+              type: string
+              description: The paged permit history for this license.
+              example: /v1/permits?contractor=CCC1332541&limit=100
+        recent_permits:
+          type: array
+          description: >
+            The 10 most recent permits for this license, newest first, in the `/v1/permits` row
+            shape. A sample, never a history.
+          items: { $ref: "#/components/schemas/Permit" }
+        recent_permits_incomplete:
+          type: boolean
+          description: Present only if the sample could not be built. Absent on success.
+        disclosure: { $ref: "#/components/schemas/Disclosure" }
+
+    Contractor:
+      type: object
+      properties:
+        license_number:     { type: string }
+        license_type:       { type: [string, "null"], description: License classification as issued. }
+        license_status:     { type: [string, "null"], description: Status as published by the issuing authority. }
+        business_name:      { type: [string, "null"] }
+        contact_name:       { type: [string, "null"], description: "License holder's name, or `null`." }
+        specialty:          { type: [string, "null"] }
+        website:            { type: [string, "null"] }
+        years_in_business:  { type: [integer, "null"] }
+        license_effective:  { type: [string, "null"], format: date }
+        license_expiration: { type: [string, "null"], format: date }
+        location:
+          type: object
+          properties:
+            city:   { type: [string, "null"] }
+            county: { type: [string, "null"] }
+            state:  { type: [string, "null"] }
+            zip:    { type: [string, "null"] }
+        activity: { $ref: "#/components/schemas/ContractorActivity" }
+        enrichment:
+          type: [object, "null"]
+          additionalProperties: true
+          description: >
+            Email, phone, workers comp and EPA lead-safe detail. Tier-gated: a trial key sees
+            `workers_comp.has_coverage` without the carrier; a Starter key sees the carrier.
+
+    ContractorActivity:
+      type: object
+      description: Permit activity. Present even with no permits, zero-filled.
+      properties:
+        permit_count:
+          type: integer
+          description: Total permits ingested for this license. This is the count, not `recent_permits`.
+        total_declared_value_usd: { type: [number, "null"] }
+        permits_last_12mo:        { type: integer }
+        value_last_12mo_usd:      { type: [number, "null"] }
+        first_permit_date:        { type: [string, "null"], format: date }
+        last_permit_date:         { type: [string, "null"], format: date }
+        top_trades:
+          type: array
+          items: { type: string }
+        top_jurisdictions:
+          type: array
+          description: A ranked list, not per-jurisdiction counts.
+          items: { type: string }
+        status_tally:
+          type: [object, "null"]
+          additionalProperties: { type: integer }
+          description: >
+            This contractor's permits counted by `status_stage`, from the identical derivation the
+            permit row serves, so a tally and the rows it summarizes can never disagree. Keys are
+            only the stages that occurred. `null` when `tally_basis` is `none`.
+        tag_tally:
+          type: [object, "null"]
+          additionalProperties: { type: integer }
+          description: >
+            The same, counted by `tags`. Sums to more than `permit_count`, because one permit can
+            carry several tags. `null` when `tally_basis` is `none`.
+        tally_basis:
+          type: [string, "null"]
+          enum: [exact, none, null]
+          description: Read this first. The tally is exact or it is absent. It is never a sample.
+
+    JurisdictionListResponse:
+      type: object
+      properties:
+        generated:
+          type: string
+          format: date-time
+          description: When the coverage file was built.
+        disclaimer:  { type: string }
+        source:
+          type: object
+          description: Names the file and states its limits.
+          properties:
+            name:        { type: string }
+            description: { type: string }
+        count:           { type: integer, description: Rows in this page. }
+        not_addressable: { type: integer, description: "Rows in this page with `addressable: false`." }
+        total_matched:   { type: integer, description: Rows matching your filters. }
+        total:           { type: integer, description: Rows in the catalog. }
+        limit:           { type: integer }
+        offset:          { type: integer }
+        filters:
+          type: object
+          description: Echo. `null` where unset.
+          properties:
+            state:  { type: [string, "null"] }
+            county: { type: [string, "null"] }
+            q:      { type: [string, "null"] }
+        jurisdictions:
+          type: array
+          items: { $ref: "#/components/schemas/Jurisdiction" }
+
+    Jurisdiction:
+      type: object
+      properties:
+        jurisdiction:
+          type: string
+          description: The code. **This is the name.** Pass it back to `/v1/permits?jurisdiction=`.
+          example: FL-ORANGE-COUNTY
+        state:            { type: string }
+        county:           { type: [string, "null"], description: "County prefix, or `null` for a bare slug with no county." }
+        permits:          { type: integer }
+        last12mo:         { type: integer }
+        license_resolved: { type: integer, description: Permits with a resolved contractor license. }
+        last_inserted:    { type: [string, "null"], format: date }
+        addressable:
+          type: boolean
+          description: >
+            `false` means this row's key is a display name rather than a code, so it cannot be
+            passed to `?jurisdiction=` yet. The permits it counts are real; the label is a known
+            data defect being repaired.
+
+    CoverageResponse:
+      type: object
+      description: >
+        Shape as served 2026-10-03. `states` and `jurisdictions` are keyed by two-letter state code.
+      properties:
+        generated:          { type: string, description: Build date of the file. }
+        disclaimer:         { type: string }
+        total_permits:      { type: integer, example: 81884842 }
+        total_records_held: { type: integer, example: 87233250 }
+        summary:
+          type: object
+          properties:
+            total_permits:       { type: integer }
+            total_states:        { type: integer, example: 51 }
+            total_jurisdictions: { type: integer, example: 1236 }
+            last12mo_permits:    { type: integer }
+        coverage_floor:
+          type: object
+          description: Why some jurisdictions are withheld from the published catalog.
+          additionalProperties: true
+        states:
+          type: object
+          additionalProperties: true
+        jurisdictions:
+          type: object
+          additionalProperties: true
+
+    UsageResponse:
+      type: object
+      properties:
+        tier:         { type: string, examples: [trial, starter, growth, scale, enterprise] }
+        period_start: { type: string, format: date-time }
+        period_end:   { type: string, format: date-time }
+        resets_at:    { type: string, format: date-time }
+        records:
+          type: object
+          properties:
+            used:      { type: integer }
+            limit:     { type: integer }
+            remaining: { type: integer }
+        requests_per_minute:
+          type: object
+          properties:
+            limit: { type: integer }
+        overage:     { type: string, description: "Serves `\"none\"` on the plans documented in api-spec-v1.md." }
+        upgrade_url: { type: string, format: uri }
