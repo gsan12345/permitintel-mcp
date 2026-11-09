@@ -49,10 +49,10 @@ info:
   description: |
     Building permit records collected from the cities and counties that issue them, served as JSON.
 
-    As of 2026-10-03 (`GET /v1/coverage`): 81,884,842 permit records, 51 states, 1,236 published
-    jurisdictions, 5,273,921 permits issued in the trailing twelve months. Florida holds 28,647,136
-    of those records across 260 jurisdictions, with Florida DBPR contractor licenses matched to
-    their permit records.
+    On 2026-11-08: 106,253,273 permit records across all 50 states and Washington, DC, in 2,682
+    published jurisdictions. These figures move with every nightly load; the live numbers are at
+    `GET /v1/coverage` (no key needed, costs 0 records). Contractor license verification reads the
+    Florida DBPR record.
 
     ## Reading a response
 

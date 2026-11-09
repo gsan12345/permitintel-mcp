@@ -33,9 +33,10 @@ Ready-made configs: [`examples/mcp-claude-desktop.json`](examples/mcp-claude-des
 What permits exist at this address. What has this contractor pulled, where, and how recently. Is
 this Florida license active or did it lapse. How old is the roof on this property and what is it made of.
 
-Scope, measured October 3, 2026: 81,884,842 permit records, 51 states, 1,236 published
-jurisdictions, 5,273,921 permits issued in the trailing twelve months. Florida holds 28,647,136 of
-those records across 260 jurisdictions, with DBPR licenses matched to their permit records.
+Scope on November 8, 2026: 106,253,273 permit records across all 50 states and Washington, DC,
+in 2,682 published jurisdictions. These figures move with every nightly load; the live numbers,
+per state and per jurisdiction, are at `GET https://permitintel.ai/api/v1/coverage` (no key needed,
+costs 0 records).
 
 Two limits you will hit. Counts are floors: we hold what the permit offices publish, and every
 response carries a `disclosure` field, so phrase answers as "at least N on record". License
