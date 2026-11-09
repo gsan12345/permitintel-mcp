@@ -33,7 +33,7 @@ Ready-made configs: [`examples/mcp-claude-desktop.json`](examples/mcp-claude-des
 What permits exist at this address. What has this contractor pulled, where, and how recently. Is
 this Florida license active or did it lapse. How old is the roof on this property and what is it made of.
 
-Scope on November 8, 2026: 106,253,273 permit records across all 50 states and Washington, DC,
+Scope on November 8, 2026: 106,253,273 permit records across all 50 states,
 in 2,682 published jurisdictions. These figures move with every nightly load; the live numbers,
 per state and per jurisdiction, are at `GET https://permitintel.ai/api/v1/coverage` (no key needed,
 costs 0 records).

@@ -49,7 +49,7 @@ info:
   description: |
     Building permit records collected from the cities and counties that issue them, served as JSON.
 
-    On 2026-11-08: 106,253,273 permit records across all 50 states and Washington, DC, in 2,682
+    On 2026-11-08: 106,253,273 permit records across all 50 states, in 2,682
     published jurisdictions. These figures move with every nightly load; the live numbers are at
     `GET /v1/coverage` (no key needed, costs 0 records). Contractor license verification reads the
     Florida DBPR record.
